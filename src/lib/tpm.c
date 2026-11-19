@@ -1492,6 +1492,110 @@ CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_
     return rv;
 }
 
+/*
+ * Whether rc is the format-one error `err` (handle, key, scheme... with their handle, parameter
+ * or session number masked out), the TPM refusing what the caller named rather than failing.
+ */
+static bool rc_is_fmt1(TSS2_RC rc, TSS2_RC err) {
+    return (rc & (TPM2_RC_FMT1 | 0x3F)) == err;
+}
+
+CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+        const CK_BYTE *qualifying, CK_ULONG qualifying_len,
+        CK_BYTE_PTR out, CK_ULONG_PTR outlen) {
+    assert(tctx);
+    assert(tobj);
+    assert(outlen);
+
+    if (*outlen < CK_TPM2_CERTIFY_MAX_LEN) {
+        *outlen = CK_TPM2_CERTIFY_MAX_LEN;
+        return CKR_BUFFER_TOO_SMALL;
+    }
+
+    TPM2B_DATA qualifying_data = TPM2B_EMPTY_INIT;
+    if (qualifying_len > sizeof(qualifying_data.buffer)) {
+        return CKR_DATA_LEN_RANGE;
+    }
+    if (qualifying_len) {
+        memcpy(qualifying_data.buffer, qualifying, qualifying_len);
+    }
+    qualifying_data.size = qualifying_len;
+
+    ESYS_CONTEXT *ectx = tctx->esys_ctx;
+
+    ESYS_TR signer = ESYS_TR_NONE;
+    TSS2_RC rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
+            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
+        return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
+                CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
+    }
+
+    CK_RV rv = CKR_GENERAL_ERROR;
+    TPM2B_ATTEST *certify_info = NULL;
+    TPMT_SIGNATURE *signature = NULL;
+    /* the signer's own scheme: a signing key with one in its template uses it */
+    TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL };
+    size_t offset = 0;
+
+    /* the signer has an empty auth value, which a password session sends as it is */
+    bool result = set_esys_auth(ectx, signer, NULL);
+    if (!result) {
+        goto out;
+    }
+
+    result = set_esys_auth(ectx, tobj->tpm_esys_tr, tobj->unsealed_auth);
+    if (!result) {
+        goto out;
+    }
+
+    flags_turndown(tctx, TPMA_SESSION_ENCRYPT);
+    rc = Esys_Certify(
+            ectx,
+            tobj->tpm_esys_tr,
+            signer,
+            tctx->hmac_session,
+            ESYS_TR_PASSWORD,
+            ESYS_TR_NONE,
+            &qualifying_data,
+            &scheme,
+            &certify_info,
+            &signature);
+    flags_restore(tctx);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_Certify: %s", Tss2_RC_Decode(rc));
+        if (rc_is_fmt1(rc, TPM2_RC_KEY) || rc_is_fmt1(rc, TPM2_RC_SCHEME)
+                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)) {
+            rv = CKR_MECHANISM_PARAM_INVALID;
+        }
+        goto out;
+    }
+
+    rc = Tss2_MU_TPM2B_ATTEST_Marshal(certify_info, out, *outlen, &offset);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Tss2_MU_TPM2B_ATTEST_Marshal: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    rc = Tss2_MU_TPMT_SIGNATURE_Marshal(signature, out, *outlen, &offset);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Tss2_MU_TPMT_SIGNATURE_Marshal: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    *outlen = offset;
+    rv = CKR_OK;
+
+out:
+    Esys_Free(certify_info);
+    Esys_Free(signature);
+    /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
+    Esys_TR_Close(ectx, &signer);
+
+    return rv;
+}
+
 CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG siglen) {
     assert(opdata);
 

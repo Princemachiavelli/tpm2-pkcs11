@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 Starting with release 1.8.0, The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added:
+- A public header, `tpm2-pkcs11-vendor.h`, installed to `$(includedir)/tpm2-pkcs11/`, fixing the
+  vendor attribute `CKA_TPM2_PUB_BLOB` and the vendor mechanism `CKM_TPM2_CERTIFY`.
+- `CKM_TPM2_CERTIFY`: `TPM2_Certify` of a key object, signed by a persistent TPM key the caller
+  names, so a client can prove with a statement the TPM signed that a PKCS#11 object is a key of
+  that TPM. See docs/VENDOR.md.
+
 ## [1.10.1] - 2026-08-06
 ### Fixed:
 - Revert commit fab314 - "configure: detect --prefix when checking for P11_KIT"

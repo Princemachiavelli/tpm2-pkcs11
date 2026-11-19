@@ -6,13 +6,13 @@
 #include <stdlib.h>
 
 #include "pkcs11.h"
+#include "tpm2-pkcs11-vendor.h"
 
 /*
- * We will allow these to be accessed, but the values are not stable
+ * The vendor attributes in tpm2-pkcs11-vendor.h are stable. These we will allow to be
+ * accessed, but the values are not stable
  */
-#define CKA_VENDOR_TPM2_DEFINED  0x0F000000UL
 #define CKA_TPM2_OBJAUTH_ENC     (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x1UL)
-#define CKA_TPM2_PUB_BLOB        (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x2UL)
 #define CKA_TPM2_PRIV_BLOB       (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x3UL)
 #define CKA_TPM2_ENC_BLOB        (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x4UL)
 #define CKA_TPM2_SERIALIZED_TR   (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x5UL)

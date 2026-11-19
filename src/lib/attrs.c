@@ -978,7 +978,7 @@ error:
     return rv;
 }
 
-static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs) {
+static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs, bool is_ak) {
 
     /* XXX These are hardcoded for now */
     CK_MECHANISM_TYPE t[] = {
@@ -990,12 +990,15 @@ static CK_RV ecc_gen_mechs(attr_list *new_pub_attrs, attr_list *new_priv_attrs) 
         CKM_ECDH1_DERIVE,
     };
 
+    /* an attestation key signs what the TPM states, no data the caller hands to C_Sign */
+    CK_ULONG len = is_ak ? 0 : sizeof(t);
+
     bool r = attr_list_add_int_seq(new_pub_attrs, CKA_ALLOWED_MECHANISMS,
-            (CK_BYTE_PTR)&t, sizeof(t));
+            (CK_BYTE_PTR)&t, len);
     goto_error_false(r);
 
     r = attr_list_add_int_seq(new_priv_attrs, CKA_ALLOWED_MECHANISMS,
-            (CK_BYTE_PTR)&t, sizeof(t));
+            (CK_BYTE_PTR)&t, len);
     goto_error_false(r);
 
     return CKR_OK;
@@ -1004,7 +1007,7 @@ error:
     return CKR_GENERAL_ERROR;
 }
 
-static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs) {
+static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs, bool is_ak) {
 
     CK_RV rv = CKR_HOST_MEMORY;
 
@@ -1031,7 +1034,7 @@ static CK_RV ecc_add_missing_attrs(attr_list **public_attrs, attr_list **private
             a->pValue, a->ulValueLen);
     goto_error_false(r);
 
-    rv = ecc_gen_mechs(new_pub_attrs, new_priv_attrs);
+    rv = ecc_gen_mechs(new_pub_attrs, new_priv_attrs, is_ak);
     if (rv != CKR_OK) {
         goto error;
     }
@@ -1154,6 +1157,7 @@ CK_RV attr_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs
     case CKM_RSA_PKCS_KEY_PAIR_GEN:
         break;
     case CKM_EC_KEY_PAIR_GEN:
+    case CKM_TPM2_AK_PAIR_GEN:
         break;
     default:
         LOGE("Unsupported keygen mechanism: 0x%lx", mech);
@@ -1217,7 +1221,9 @@ CK_RV attr_add_missing_attrs(attr_list **public_attrs, attr_list **private_attrs
         return rsa_add_missing_attrs(public_attrs, private_attrs);
         break;
     case CKM_EC_KEY_PAIR_GEN:
-        return ecc_add_missing_attrs(public_attrs, private_attrs);
+        return ecc_add_missing_attrs(public_attrs, private_attrs, false);
+    case CKM_TPM2_AK_PAIR_GEN:
+        return ecc_add_missing_attrs(public_attrs, private_attrs, true);
     }
 
     assert(0);

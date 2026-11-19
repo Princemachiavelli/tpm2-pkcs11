@@ -87,3 +87,53 @@ CK_ULONG out_len = sizeof(out);
 rv = C_SignInit(session, &mech, key);
 rv = C_Sign(session, nonce, nonce_len, out, &out_len);
 ```
+
+## `CKM_TPM2_AK_PAIR_GEN`
+
+`C_GenerateKeyPair` of an attestation key as an ordinary key pair of the token, so that a client
+needs no TPM handle and no access to the TPM to have one. The mechanism takes no parameter; the
+templates are the EC key pair's (`CKA_EC_PARAMS`, `CKA_TOKEN`, `CKA_PRIVATE`, a label, an id...).
+
+The TPM key is fixed:
+
+- restricted, so it signs only digests of TPM-generated structures such as a certify statement,
+  never data a caller chose; a signing key, with the ECDSA scheme over the curve's hash (P-256 and
+  SHA-256, P-384 and SHA-384, P-521 and SHA-512, `CKR_CURVE_NOT_SUPPORTED` for any other curve);
+- `fixedTPM`, `fixedParent`, `sensitiveDataOrigin`, `userWithAuth`: it never leaves the TPM, and
+  its auth value is the module's own, like any key of the token.
+
+The private key has `CKA_SIGN` false, and a `CKA_ALLOWED_MECHANISMS` with no mechanism in it, so
+`C_SignInit` refuses it in the module instead of failing in the TPM, which asks a restricted key
+for a hashcheck ticket. `CKA_KEY_GEN_MECHANISM` is `CKM_TPM2_AK_PAIR_GEN`. A template that asks for
+`CKA_SIGN`, `CKA_VERIFY`, `CKA_ENCRYPT` or `CKA_DECRYPT` true is `CKR_TEMPLATE_INCONSISTENT`, as is
+one that makes the key extractable. That the key is restricted is in the `TPMA_OBJECT` of its
+`CKA_TPM2_PUB_BLOB`, and a client that trusts the key only if it is checks it there.
+
+## `CKM_TPM2_CERTIFY_OBJECT`
+
+`CKM_TPM2_CERTIFY`, with the signer a private key made by `CKM_TPM2_AK_PAIR_GEN` and named by its
+object handle: parameter `CK_TPM2_CERTIFY_OBJECT_PARAMS`, `hSigner`. The key, the qualifying data,
+the output and the checks are those of `CKM_TPM2_CERTIFY`. Any other signer (an ordinary key of the
+token, a public key object, no object at all, the key itself) is `CKR_MECHANISM_PARAM_INVALID`:
+only an attestation key signs statements about the TPM.
+
+What differs for the client is the signer. It identifies the attestation key by the public key it
+read from the token (`CKA_TPM2_PUB_BLOB`, or `CKA_EC_POINT`) and pinned, and verifies the signature
+under it. The attested qualified signer is the qualified Name of a key under the token's primary
+key, which a client without TPM access cannot compute, so check 4's last half above does not apply:
+the key that signed is the pinned public key, and that it is fixed to this TPM is what the
+`TPMA_OBJECT` of its `CKA_TPM2_PUB_BLOB` says.
+
+```c
+CK_MECHANISM gen = { CKM_TPM2_AK_PAIR_GEN, NULL, 0 };
+rv = C_GenerateKeyPair(session, &gen, pub_template, pub_count, priv_template, priv_count, &ak_pub, &ak_priv);
+
+CK_TPM2_CERTIFY_OBJECT_PARAMS params = { .hSigner = ak_priv };
+CK_MECHANISM mech = { CKM_TPM2_CERTIFY_OBJECT, &params, sizeof(params) };
+rv = C_SignInit(session, &mech, key);
+rv = C_Sign(session, nonce, nonce_len, out, &out_len);
+```
+
+`test/integration/pkcs-attest-key.int.c` generates attestation keys on two curves, certifies private
+and secret keys and verifies the statements with OpenSSL, and checks the refusals and that the key
+survives a restart of the token.

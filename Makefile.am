@@ -47,6 +47,9 @@ CLEANFILES = AUTHORS
 pkgconfig_DATA =
 DISTCLEANFILES = $(pkgconfig_DATA)
 
+### Vendor-defined PKCS#11 types: attribute and mechanism numbers clients may rely on ###
+pkginclude_HEADERS = src/tpm2-pkcs11-vendor.h
+
 ### PKCS#11 Library Definition ###
 libtpm2_pkcs11 = src/libtpm2_pkcs11.la
 pkgconfig_DATA += lib/tpm2-pkcs11.pc

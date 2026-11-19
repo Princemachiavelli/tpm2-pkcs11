@@ -30,4 +30,5 @@ as the cryptographic token.
 # Advanced Knowledge
 * [Architecture](/docs/ARCHITECTURE.md) - Internal Overview
 * [DB Upgrades](/docs/DB_UPGRADE.md) - What happens on a DB Version Upgrade
+* [Vendor interface](/docs/VENDOR.md) - The vendor-defined attributes and mechanisms, `CKM_TPM2_CERTIFY`
 * [Release Process](/docs/RELEASE.md) - How releases are conducted

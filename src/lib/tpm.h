@@ -104,6 +104,31 @@ bool tpm_contextload_handle(tpm_ctx *ctx, twist handle_blob, uint32_t *handle);
 CK_RV tpm_sign(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG_PTR siglen);
 CK_RV tpm_verify(tpm_op_data *opdata, CK_BYTE_PTR data, CK_ULONG datalen, CK_BYTE_PTR sig, CK_ULONG siglen);
 
+/**
+ * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h): TPM2_Certify of a loaded object, signed by the
+ * persistent key at signer_handle, which must have an empty auth value.
+ * @param tctx
+ *  The tpm context.
+ * @param tobj
+ *  The key object to certify, loaded in the TPM by token_load_object().
+ * @param signer_handle
+ *  The persistent TPM handle of the signing key.
+ * @param qualifying
+ *  The qualifying data (the nonce), qualifying_len bytes, at most CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN.
+ * @param out
+ *  Receives the marshaled TPM2B_ATTEST followed by the marshaled TPMT_SIGNATURE.
+ * @param outlen
+ *  On entry the size of out, which must be at least CK_TPM2_CERTIFY_MAX_LEN; on success the
+ *  size of what was written.
+ * @return
+ *  CKR_OK on success, CKR_DATA_LEN_RANGE for too long a nonce, CKR_BUFFER_TOO_SMALL,
+ *  CKR_MECHANISM_PARAM_INVALID when the TPM refuses the signer (no such handle, not a
+ *  signing key), CKR_GENERAL_ERROR otherwise.
+ */
+CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+        const CK_BYTE *qualifying, CK_ULONG qualifying_len,
+        CK_BYTE_PTR out, CK_ULONG_PTR outlen);
+
 CK_RV tpm_rsa_pkcs_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **opdata);
 CK_RV tpm_rsa_oaep_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **opdata);
 CK_RV tpm_rsa_pss_get_opdata(mdetail *m, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **outdata);

@@ -153,6 +153,23 @@ echo "Adding 1 HMAC:SHA256 key under token \"label\""
 tpm2_ptool addkey --algorithm=hmac:sha256 --label="label" --key-label="hmac0" --userpin=myuserpin --path=$TPM2_PKCS11_STORE
 echo "Added HMAC Key"
 
+# The signer of the CKM_TPM2_CERTIFY test (pkcs-certify.int.c): a restricted ECDSA P-256 signing
+# key with an empty auth value at a persistent handle, its public key in ak.pem.
+tpm2_createprimary -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx"
+tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null \
+    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign' \
+    -c "$TPM2_PKCS11_STORE/ak.ctx"
+tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak.ctx" 0x81000F01
+tpm2_readpublic -c 0x81000F01 -f pem -o "$TPM2_PKCS11_STORE/ak.pem"
+# A key that is no signing key (a storage primary), the signer the test must see refused.
+tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx" 0x81000F02
+# A signing key with an auth value, which the mechanism cannot use. noDA: a wrong auth does not
+# count against the TPM's lockout.
+tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -p signerauth \
+    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign|noda' \
+    -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
+tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
+
 #
 # generate cert
 #

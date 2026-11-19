@@ -34,7 +34,73 @@ struct sign_opdata {
     int padding;
     EVP_PKEY *pkey;
     const EVP_MD *md;
+    /* CKM_TPM2_CERTIFY: the persistent TPM handle of the signing key */
+    uint32_t certify_signer;
 };
+
+/*
+ * CKM_TPM2_CERTIFY (tpm2-pkcs11-vendor.h) is not a signature over data: the TPM signs a statement
+ * about the key object, with a key the caller names. The object is certified as it is, so
+ * neither CKA_SIGN nor CKA_ALLOWED_MECHANISMS decides (decrypt-only and HMAC keys are certified
+ * too). The data of the operation is the qualifying data, buffered as for any mechanism that
+ * does not hash.
+ */
+static void sign_opdata_free(sign_opdata **opdata);
+
+static CK_RV certify_init(operation op, session_ctx *ctx, tobject *tobj, CK_MECHANISM_PTR mechanism) {
+
+    CK_RV rv = CKR_OK;
+
+    /* there is nothing to verify: the caller checks the statement */
+    if (op != operation_sign) {
+        rv = CKR_MECHANISM_INVALID;
+        goto error;
+    }
+
+    if (!mechanism->pParameter || mechanism->ulParameterLen != sizeof(CK_TPM2_CERTIFY_PARAMS)) {
+        rv = CKR_MECHANISM_PARAM_INVALID;
+        goto error;
+    }
+
+    CK_TPM2_CERTIFY_PARAMS params;
+    memcpy(&params, mechanism->pParameter, sizeof(params));
+    if (params.ulSignerHandle < 0x81000000UL || params.ulSignerHandle > 0x81FFFFFFUL) {
+        LOGE("CKM_TPM2_CERTIFY signer is not a persistent handle: 0x%lx", params.ulSignerHandle);
+        rv = CKR_MECHANISM_PARAM_INVALID;
+        goto error;
+    }
+
+    /* public key objects are not loaded in the TPM, there is nothing to certify */
+    if (!tobj->priv || !tobj->tpm_esys_tr) {
+        rv = CKR_KEY_TYPE_INCONSISTENT;
+        goto error;
+    }
+
+    sign_opdata *opdata = calloc(1, sizeof(sign_opdata));
+    if (!opdata) {
+        LOGE("oom");
+        rv = CKR_HOST_MEMORY;
+        goto error;
+    }
+
+    opdata->certify_signer = params.ulSignerHandle;
+    memcpy(&opdata->mech, mechanism, sizeof(opdata->mech));
+
+    opdata->crypto_opdata = encrypt_op_data_new();
+    if (!opdata->crypto_opdata) {
+        sign_opdata_free(&opdata);
+        rv = CKR_HOST_MEMORY;
+        goto error;
+    }
+
+    session_ctx_opdata_set(ctx, op, tobj, opdata, (opdata_free_fn)sign_opdata_free);
+
+    return CKR_OK;
+
+error:
+    tobject_user_decrement(tobj);
+    return rv;
+}
 
 static sign_opdata *sign_opdata_new(operation op, mdetail *mdtl, CK_MECHANISM_PTR mechanism, tobject *tobj) {
 
@@ -177,6 +243,10 @@ static CK_RV common_init(operation op, session_ctx *ctx, CK_MECHANISM_PTR mechan
     rv = mech_validate(tok->mdtl, mechanism, tobj->attrs);
     if (rv != CKR_OK) {
         return rv;
+    }
+
+    if (mechanism->mechanism == CKM_TPM2_CERTIFY) {
+        return certify_init(op, ctx, tobj, mechanism);
     }
 
     digest_op_data *digest_opdata = NULL;
@@ -336,6 +406,32 @@ CK_RV sign_final_ex(session_ctx *ctx, CK_BYTE_PTR signature, CK_ULONG_PTR signat
     assert(tobj);
 
     twist digest_buf = NULL;
+
+    if (opdata->mech.mechanism == CKM_TPM2_CERTIFY) {
+        /*
+         * A size query, and a buffer too small, never reach the TPM: the output has a fixed
+         * upper bound. The buffered data is the qualifying data, nothing is hashed.
+         */
+        if (!signature) {
+            *signature_len = CK_TPM2_CERTIFY_MAX_LEN;
+            rv = CKR_OK;
+            goto out;
+        }
+
+        if (*signature_len < CK_TPM2_CERTIFY_MAX_LEN) {
+            *signature_len = CK_TPM2_CERTIFY_MAX_LEN;
+            rv = CKR_BUFFER_TOO_SMALL;
+            goto out;
+        }
+
+        rv = tpm_certify(tok->tctx, tobj, opdata->certify_signer,
+                (const CK_BYTE *)opdata->buffer, twist_len(opdata->buffer),
+                signature, signature_len);
+        if (rv != CKR_OK) {
+            goto session_out;
+        }
+        goto out;
+    }
 
     size_t expected_sig_len = 0;
     rv = tobject_get_min_buf_size(tobj, &opdata->mech, &expected_sig_len);

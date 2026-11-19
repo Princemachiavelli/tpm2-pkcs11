@@ -37,6 +37,8 @@ enum mechanism_flags {
     mf_force_synthetic = 1 << 12,
     mf_hmac          = 1 << 13,
     mf_derive        = 1 << 14,
+    /* a vendor mechanism run by the module itself, listed whatever algorithms the TPM has */
+    mf_vendor        = 1 << 15,
 };
 
 typedef struct mdetail_entry mdetail_entry;
@@ -199,6 +201,13 @@ static const mdetail_entry _g_mechs_templ[] = {
     { .type = CKM_SHA256_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha256_get_opdata },
     { .type = CKM_SHA384_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha384_get_opdata },
     { .type = CKM_SHA512_HMAC, .flags = mf_sign|mf_verify|mf_hmac, .validator = hmac_validator, .get_tpm_opdata = tpm_hmac_sha512_get_opdata },
+
+    /*
+     * vendor (tpm2-pkcs11-vendor.h): TPM2_Certify, run by sign_init/sign_final. No validator, so
+     * CKA_ALLOWED_MECHANISMS is not consulted (see mech_validate); its parameter is checked by
+     * sign_init, which is the only place that takes it.
+     */
+    { .type = CKM_TPM2_CERTIFY, .flags = mf_sign|mf_vendor },
 };
 
 const rsa_detail _g_rsa_keysizes_templ [] = {
@@ -1145,7 +1154,8 @@ static bool is_mech_supported(mdetail_entry *d) {
 
     return (f & mf_tpm_supported) ||
            (f & mf_is_keygen)     ||
-           (f & mf_is_digester);
+           (f & mf_is_digester)   ||
+           (f & mf_vendor);
 }
 
 CK_RV mech_get_supported(mdetail *m, CK_MECHANISM_TYPE_PTR mechlist, CK_ULONG_PTR count) {
@@ -1555,6 +1565,12 @@ CK_RV mech_get_info(mdetail *m, tpm_ctx *tctx,
     /* functions below here return */
     if (d->flags & mf_is_digester) {
         info->flags |= CKF_DIGEST;
+        return CKR_OK;
+    }
+
+    /* a vendor mechanism has no key sizes: it takes the key as it is */
+    if (d->flags & mf_vendor) {
+        info->flags |= CKF_HW;
         return CKR_OK;
     }
 

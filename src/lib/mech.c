@@ -208,6 +208,9 @@ static const mdetail_entry _g_mechs_templ[] = {
      * sign_init, which is the only place that takes it.
      */
     { .type = CKM_TPM2_CERTIFY, .flags = mf_sign|mf_vendor },
+    { .type = CKM_TPM2_CERTIFY_OBJECT, .flags = mf_sign|mf_vendor },
+    /* a key pair like CKM_EC_KEY_PAIR_GEN's, with a fixed template: see tpm2_generate_key() */
+    { .type = CKM_TPM2_AK_PAIR_GEN, .flags = mf_is_keygen|mf_vendor },
 };
 
 const rsa_detail _g_rsa_keysizes_templ [] = {

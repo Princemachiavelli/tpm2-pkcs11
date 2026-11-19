@@ -53,6 +53,41 @@
  */
 #define CKM_TPM2_CERTIFY         (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x1UL)
 
+/*
+ * CKM_TPM2_AK_PAIR_GEN: C_GenerateKeyPair of an attestation key: a restricted ECDSA signing key
+ * that never leaves the TPM (fixedTPM, fixedParent), an ordinary key pair of the token otherwise.
+ * It signs nothing but statements the TPM itself makes, such as CKM_TPM2_CERTIFY_OBJECT's.
+ *
+ *   pMechanism  no parameter.
+ *   public key template   CKA_EC_PARAMS: NIST P-256, P-384 or P-521; the ECDSA hash is the
+ *                         curve's (SHA-256, SHA-384, SHA-512). CKA_TOKEN is true.
+ *   Neither template may set CKA_SIGN, CKA_VERIFY, CKA_ENCRYPT, CKA_DECRYPT, CKA_EXTRACTABLE
+ *   or CKA_SENSITIVE other than as the key is (CKR_TEMPLATE_INCONSISTENT).
+ *
+ * The private key has CKA_SIGN false and no CKA_ALLOWED_MECHANISMS, so C_SignInit refuses it
+ * in the module; CKA_KEY_GEN_MECHANISM is CKM_TPM2_AK_PAIR_GEN. That it is restricted can be
+ * read in the TPMA_OBJECT of its CKA_TPM2_PUB_BLOB.
+ */
+#define CKM_TPM2_AK_PAIR_GEN     (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x2UL)
+
+/*
+ * CKM_TPM2_CERTIFY_OBJECT: CKM_TPM2_CERTIFY with an attestation key of the token (a private key
+ * made by CKM_TPM2_AK_PAIR_GEN) as the signer, named by its object handle, so that a client
+ * needs no TPM handle and no TPM access. Used as CKM_TPM2_CERTIFY is (same key to certify,
+ * qualifying data and output). A signer that is not such a key is CKR_MECHANISM_PARAM_INVALID.
+ *
+ * The caller checks the signature under the attestation key's public key (its CKA_EC_POINT,
+ * or the CKA_TPM2_PUB_BLOB). The attest names the signer by its qualified Name, which a client
+ * cannot compute: the key that signed is identified by its public key only.
+ */
+#define CKM_TPM2_CERTIFY_OBJECT  (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x3UL)
+
+typedef struct CK_TPM2_CERTIFY_OBJECT_PARAMS {
+    CK_OBJECT_HANDLE hSigner;
+} CK_TPM2_CERTIFY_OBJECT_PARAMS;
+
+typedef CK_TPM2_CERTIFY_OBJECT_PARAMS *CK_TPM2_CERTIFY_OBJECT_PARAMS_PTR;
+
 /* An upper bound of the output of CKM_TPM2_CERTIFY (an attest of a certified key and a 4096-bit RSA signature). */
 #define CK_TPM2_CERTIFY_MAX_LEN  1024UL
 

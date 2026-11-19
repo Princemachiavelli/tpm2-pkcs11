@@ -1500,7 +1500,7 @@ static bool rc_is_fmt1(TSS2_RC rc, TSS2_RC err) {
     return (rc & (TPM2_RC_FMT1 | 0x3F)) == err;
 }
 
-CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
+CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle, tobject *signer_obj,
         const CK_BYTE *qualifying, CK_ULONG qualifying_len,
         CK_BYTE_PTR out, CK_ULONG_PTR outlen) {
     assert(tctx);
@@ -1523,13 +1523,23 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
 
     ESYS_CONTEXT *ectx = tctx->esys_ctx;
 
-    ESYS_TR signer = ESYS_TR_NONE;
-    TSS2_RC rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
-            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
-    if (rc != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
-        return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
-                CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
+    /*
+     * The signer is an object of the token (loaded; it proves its auth value in a session of its
+     * own: the TPM takes no session twice in a command) or a persistent key of the TPM the
+     * caller made (an empty auth value, which a password session sends as it is).
+     */
+    ESYS_TR signer = signer_obj ? signer_obj->tpm_esys_tr : ESYS_TR_NONE;
+    ESYS_TR signer_session = ESYS_TR_PASSWORD;
+    bool started_signer_session = false;
+    TSS2_RC rc = TSS2_RC_SUCCESS;
+    if (!signer_obj) {
+        rc = Esys_TR_FromTPMPublic(ectx, signer_handle,
+                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &signer);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGE("Esys_TR_FromTPMPublic(0x%x): %s", signer_handle, Tss2_RC_Decode(rc));
+            return rc_is_fmt1(rc, TPM2_RC_HANDLE) ?
+                    CKR_MECHANISM_PARAM_INVALID : CKR_GENERAL_ERROR;
+        }
     }
 
     CK_RV rv = CKR_GENERAL_ERROR;
@@ -1539,8 +1549,7 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
     TPMT_SIG_SCHEME scheme = { .scheme = TPM2_ALG_NULL };
     size_t offset = 0;
 
-    /* the signer has an empty auth value, which a password session sends as it is */
-    bool result = set_esys_auth(ectx, signer, NULL);
+    bool result = set_esys_auth(ectx, signer, signer_obj ? signer_obj->unsealed_auth : NULL);
     if (!result) {
         goto out;
     }
@@ -1548,6 +1557,26 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
     result = set_esys_auth(ectx, tobj->tpm_esys_tr, tobj->unsealed_auth);
     if (!result) {
         goto out;
+    }
+
+    if (signer_obj) {
+        /* unbound and unsalted: the HMAC key is the signer's auth value, which stays off the wire */
+        TPMT_SYM_DEF symmetric = { .algorithm = TPM2_ALG_NULL };
+        rc = Esys_StartAuthSession(ectx, ESYS_TR_NONE, ESYS_TR_NONE,
+                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, NULL,
+                TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256, &signer_session);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGE("Esys_StartAuthSession: %s", Tss2_RC_Decode(rc));
+            signer_session = ESYS_TR_PASSWORD;
+            goto out;
+        }
+        started_signer_session = true;
+
+        rc = Esys_TRSess_SetAttributes(ectx, signer_session, TPMA_SESSION_CONTINUESESSION, 0xff);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGE("Esys_TRSess_SetAttributes: %s", Tss2_RC_Decode(rc));
+            goto out;
+        }
     }
 
     /*
@@ -1560,7 +1589,7 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
             tobj->tpm_esys_tr,
             signer,
             tctx->hmac_session,
-            ESYS_TR_PASSWORD,
+            signer_session,
             ESYS_TR_NONE,
             &qualifying_data,
             &scheme,
@@ -1602,8 +1631,16 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
 out:
     Esys_Free(certify_info);
     Esys_Free(signature);
-    /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
-    Esys_TR_Close(ectx, &signer);
+    if (started_signer_session) {
+        rc = Esys_FlushContext(ectx, signer_session);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
+        }
+    }
+    if (!signer_obj) {
+        /* a persistent object: only the ESYS_TR is released, nothing is flushed from the TPM */
+        Esys_TR_Close(ectx, &signer);
+    }
 
     return rv;
 }
@@ -3449,10 +3486,13 @@ static CK_RV sanity_check_mech(CK_MECHANISM_PTR mechanism) {
         case CKM_RSA_PKCS_KEY_PAIR_GEN:
             /* falls-thru */
         case CKM_EC_KEY_PAIR_GEN:
+            /* falls-thru */
+        case CKM_TPM2_AK_PAIR_GEN:
             break;
         default:
-            LOGE("Only supports mechanism \"CKM_RSA_PKCS_KEY_PAIR_GEN\" or"
-                 "\"CKM_EC_KEY_PAIR_GEN\", got: 0x%lx", mechanism->mechanism);
+            LOGE("Only supports mechanism \"CKM_RSA_PKCS_KEY_PAIR_GEN\", "
+                 "\"CKM_EC_KEY_PAIR_GEN\" or \"CKM_TPM2_AK_PAIR_GEN\", got: 0x%lx",
+                 mechanism->mechanism);
             return CKR_MECHANISM_INVALID;
     }
 
@@ -3490,6 +3530,78 @@ static const attr_handler tpm_handlers[] = {
     { CKA_DERIVE,            generic_bbool_any },
 };
 
+/*
+ * The usage attributes an attestation key (CKM_TPM2_AK_PAIR_GEN) cannot have: it signs what the
+ * TPM states, not data.
+ */
+static CK_RV ak_check_usage_attrs(attr_list *attrs) {
+
+    static const CK_ATTRIBUTE_TYPE usage[] = { CKA_SIGN, CKA_VERIFY, CKA_ENCRYPT, CKA_DECRYPT };
+
+    size_t i;
+    for (i = 0; i < ARRAY_LEN(usage); i++) {
+        CK_ATTRIBUTE_PTR a = attr_get_attribute_by_type(attrs, usage[i]);
+        if (!a) {
+            continue;
+        }
+
+        CK_BBOOL value;
+        CK_RV rv = attr_CK_BBOOL(a, &value);
+        if (rv != CKR_OK) {
+            return rv;
+        }
+
+        if (value) {
+            LOGE("An attestation key cannot have %s", attr_get_name(usage[i]));
+            return CKR_TEMPLATE_INCONSISTENT;
+        }
+    }
+
+    return CKR_OK;
+}
+
+/*
+ * What makes the key pair an attestation key: restricted, so the TPM signs only digests of its own
+ * statements, with ECDSA over the curve's hash; fixed to this TPM and its primary.
+ */
+static CK_RV ak_make_template(TPM2B_PUBLIC *pub) {
+
+    TPMT_PUBLIC *p = &pub->publicArea;
+
+    TPM2_ALG_ID hash;
+    switch (p->parameters.eccDetail.curveID) {
+    case TPM2_ECC_NIST_P256:
+        hash = TPM2_ALG_SHA256;
+        break;
+    case TPM2_ECC_NIST_P384:
+        hash = TPM2_ALG_SHA384;
+        break;
+    case TPM2_ECC_NIST_P521:
+        hash = TPM2_ALG_SHA512;
+        break;
+    default:
+        LOGE("An attestation key is P-256, P-384 or P-521");
+        return CKR_CURVE_NOT_SUPPORTED;
+    }
+
+    /*
+     * Whatever the templates asked for beyond that (extractable, sensitive) has already been
+     * applied to the attributes: anything but the defaults is a conflict.
+     */
+    const TPMA_OBJECT wanted = TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT
+            | TPMA_OBJECT_SENSITIVEDATAORIGIN | TPMA_OBJECT_USERWITHAUTH;
+    if ((p->objectAttributes & ~TPMA_OBJECT_SIGN_ENCRYPT) != wanted) {
+        LOGE("An attestation key is fixed to its TPM, not extractable");
+        return CKR_TEMPLATE_INCONSISTENT;
+    }
+
+    p->objectAttributes = wanted | TPMA_OBJECT_RESTRICTED | TPMA_OBJECT_SIGN_ENCRYPT;
+    p->parameters.eccDetail.scheme.scheme = TPM2_ALG_ECDSA;
+    p->parameters.eccDetail.scheme.details.ecdsa.hashAlg = hash;
+
+    return CKR_OK;
+}
+
 static CK_RV tpm_data_init(
         CK_MECHANISM_PTR mechanism,
         attr_list *pubattrs,
@@ -3506,6 +3618,17 @@ static CK_RV tpm_data_init(
         case CKM_EC_KEY_PAIR_GEN:
             tpmdat->pub = ecc_template;
             break;
+        case CKM_TPM2_AK_PAIR_GEN: {
+            tpmdat->pub = ecc_template;
+            CK_RV rv = ak_check_usage_attrs(pubattrs);
+            if (rv == CKR_OK) {
+                rv = ak_check_usage_attrs(privattrs);
+            }
+            if (rv != CKR_OK) {
+                return rv;
+            }
+            break;
+        }
         default:
             /* should never happen checked at entry */
             LOGE("Unsupported key pair mechanism: 0x%lx",
@@ -3524,6 +3647,10 @@ static CK_RV tpm_data_init(
             tpm_handlers, ARRAY_LEN(tpm_handlers), tpmdat);
     if (rv != CKR_OK) {
         return rv;
+    }
+
+    if (mechanism->mechanism == CKM_TPM2_AK_PAIR_GEN) {
+        return ak_make_template(&tpmdat->pub);
     }
 
     return CKR_OK;
@@ -3915,6 +4042,7 @@ CK_RV tpm2_generate_key(
         rv = tpm_object_data_populate_rsa(out_pub, objdata);
         break;
     case CKM_EC_KEY_PAIR_GEN:
+    case CKM_TPM2_AK_PAIR_GEN:
         rv = tpm_object_data_populate_ecc(out_pub, objdata);
         break;
     default:
@@ -3949,7 +4077,11 @@ CK_RV tpm2_generate_key(
     r = attr_list_add_bool(objdata->attrs, CKA_LOCAL, local);
     goto_error_false(r);
 
-    /* conditional block */
+    /*
+     * conditional block. An attestation key is a TPM signing key, but not one to sign data with:
+     * the usage attributes are false, and the module refuses C_Sign before the TPM would.
+     */
+    bool is_ak = mechanism->mechanism == CKM_TPM2_AK_PAIR_GEN;
     CK_BBOOL decrypt = !!(objattrs & TPMA_OBJECT_DECRYPT);
     r = attr_list_add_bool(objdata->attrs, CKA_DECRYPT, decrypt);
     goto_error_false(r);
@@ -3958,7 +4090,7 @@ CK_RV tpm2_generate_key(
     r = attr_list_add_bool(objdata->attrs, CKA_VERIFY, decrypt);
     goto_error_false(r);
 
-    CK_BBOOL sign = !!(objattrs & TPMA_OBJECT_SIGN_ENCRYPT);
+    CK_BBOOL sign = !is_ak && !!(objattrs & TPMA_OBJECT_SIGN_ENCRYPT);
     r = attr_list_add_bool(objdata->attrs, CKA_SIGN, sign);
     goto_error_false(r);
 

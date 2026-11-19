@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CKM_TPM2_CERTIFY`: `TPM2_Certify` of a key object, signed by a persistent TPM key the caller
   names, so a client can prove with a statement the TPM signed that a PKCS#11 object is a key of
   that TPM. See docs/VENDOR.md.
+- `CKM_TPM2_AK_PAIR_GEN`: `C_GenerateKeyPair` of an attestation key (a restricted ECDSA signing key
+  of the TPM) as an object of the token, and `CKM_TPM2_CERTIFY_OBJECT`, `CKM_TPM2_CERTIFY` signed
+  by such a key, named by its object handle: no TPM handle or TPM access for the client.
 
 ## [1.10.1] - 2026-08-06
 ### Fixed:

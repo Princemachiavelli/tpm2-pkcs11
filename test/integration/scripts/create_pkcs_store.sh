@@ -163,6 +163,12 @@ tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak.ctx" 0x81000F01
 tpm2_readpublic -c 0x81000F01 -f pem -o "$TPM2_PKCS11_STORE/ak.pem"
 # A key that is no signing key (a storage primary), the signer the test must see refused.
 tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-primary.ctx" 0x81000F02
+# A signing key with an auth value, which the mechanism cannot use. noDA: a wrong auth does not
+# count against the TPM's lockout.
+tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -p signerauth \
+    -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign|noda' \
+    -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
+tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
 
 #
 # generate cert

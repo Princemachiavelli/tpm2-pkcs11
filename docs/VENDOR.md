@@ -44,8 +44,11 @@ decrypt-only RSA key, an AES or HMAC key). The mechanism is listed by `C_GetMech
 
 The signer is a key the caller made: an empty auth value and a signing key, in practice a restricted
 signing key (an attestation key), which signs only TPM-generated structures. tpm2-pkcs11 only uses
-it, never creates or changes it. An unknown handle, or a key the TPM refuses to sign with, is
-`CKR_MECHANISM_PARAM_INVALID`. The signature is made with the signer's own scheme.
+it, never creates or changes it. An unknown handle, a key the TPM refuses to sign with, and a key
+whose auth value is not empty are `CKR_MECHANISM_PARAM_INVALID`. A key with an auth value that is not
+marked `noDA` counts that refusal as a failed authorization against the TPM's dictionary-attack
+lockout, so make the signer with an empty auth value. The signature is made with the signer's own
+scheme.
 
 ```sh
 # An attestation key at a persistent handle, and its public key for verifying with

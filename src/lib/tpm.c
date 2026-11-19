@@ -1550,7 +1550,11 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
         goto out;
     }
 
-    flags_turndown(tctx, TPMA_SESSION_ENCRYPT);
+    /*
+     * The nonce is not secret and may be empty (which a session cannot encrypt), and the
+     * statement is not either: neither direction is encrypted.
+     */
+    flags_turndown(tctx, TPMA_SESSION_ENCRYPT | TPMA_SESSION_DECRYPT);
     rc = Esys_Certify(
             ectx,
             tobj->tpm_esys_tr,
@@ -1565,8 +1569,16 @@ CK_RV tpm_certify(tpm_ctx *tctx, tobject *tobj, uint32_t signer_handle,
     flags_restore(tctx);
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Esys_Certify: %s", Tss2_RC_Decode(rc));
+        /*
+         * What is wrong with the signer: not a signing key, or its auth value is not the empty
+         * one (the second authorization, the password session, failed). The object's own
+         * authorization is the first, and not the caller's to get wrong.
+         */
+        bool signer_auth_failed = (rc_is_fmt1(rc, TPM2_RC_AUTH_FAIL) || rc_is_fmt1(rc, TPM2_RC_BAD_AUTH))
+                && (rc & TPM2_RC_N_MASK) == TPM2_RC_S + TPM2_RC_2;
         if (rc_is_fmt1(rc, TPM2_RC_KEY) || rc_is_fmt1(rc, TPM2_RC_SCHEME)
-                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)) {
+                || rc_is_fmt1(rc, TPM2_RC_TYPE) || rc_is_fmt1(rc, TPM2_RC_ATTRIBUTES)
+                || signer_auth_failed) {
             rv = CKR_MECHANISM_PARAM_INVALID;
         }
         goto out;

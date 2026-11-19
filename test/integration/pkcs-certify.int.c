@@ -19,6 +19,8 @@
 #define SIGNER_HANDLE 0x81000F01UL
 /* A persistent key of the TPM that is no signing key, also from create_pkcs_store.sh. */
 #define NOT_A_SIGNER_HANDLE 0x81000F02UL
+/* A signing key with an auth value, which the mechanism cannot use (noDA), likewise. */
+#define SIGNER_WITH_AUTH_HANDLE 0x81000F03UL
 
 struct test_info {
     CK_SESSION_HANDLE handle;
@@ -335,6 +337,12 @@ static void test_certify_sizes_and_parts(void **state) {
     assert_int_equal(rv, CKR_OK);
     check_statement(session, priv, nonce, sizeof(nonce), out, out_len);
 
+    /* no nonce at all */
+    out_len = sizeof(out);
+    rv = certify(session, priv, SIGNER_HANDLE, nonce, 0, out, &out_len);
+    assert_int_equal(rv, CKR_OK);
+    check_statement(session, priv, nonce, 0, out, out_len);
+
     /* a nonce of the longest length, and the operation ends: the next one is not "active" */
     CK_BYTE longest[CK_TPM2_CERTIFY_MAX_QUALIFYING_LEN] = { 0xa5 };
     out_len = sizeof(out);
@@ -387,6 +395,9 @@ static void test_certify_refusals(void **state) {
     assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
     out_len = sizeof(out);
     rv = certify(session, priv, NOT_A_SIGNER_HANDLE, nonce, sizeof(nonce), out, &out_len);
+    assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
+    out_len = sizeof(out);
+    rv = certify(session, priv, SIGNER_WITH_AUTH_HANDLE, nonce, sizeof(nonce), out, &out_len);
     assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
 
     /* too long a nonce */

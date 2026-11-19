@@ -137,3 +137,67 @@ rv = C_Sign(session, nonce, nonce_len, out, &out_len);
 `test/integration/pkcs-attest-key.int.c` generates attestation keys on two curves, certifies private
 and secret keys and verifies the statements with OpenSSL, and checks the refusals and that the key
 survives a restart of the token.
+
+## `CKA_TPM2_EK_PUB_BLOB` and `CKM_TPM2_ACTIVATE_CREDENTIAL`
+
+Chaining an attestation key to the TPM's Endorsement Key certificate answers "is this a genuine
+TPM?", not only "is it the same TPM as at first use". The client makes a credential, with
+`TPM2_MakeCredential`, for the EK's public key and the attestation key's Name: only a TPM that holds
+both, the EK for which the manufacturer issued the certificate and that attestation key, can
+recover it.
+
+`CKA_TPM2_EK_PUB_BLOB` is on the private key of an attestation key: the public area of the default
+RSA 2048 EK of the TCG EK Credential Profile, a `TPM2B_PUBLIC`. It is a function of the TPM's
+endorsement seed and the template only, so it is the key of the manufacturer's EK certificate (the
+test compares it byte for byte with what `tpm2_createek` makes). It is absent if the endorsement
+hierarchy had an auth value when the key was made. The EK is not an object of the token: it is a
+primary of the endorsement hierarchy, not a child of the token's primary, and the module makes it
+for the operation and flushes it.
+
+`CKA_TPM2_EK_CERT` is next to it: the X.509 certificate (DER) in the TPM's NV index `0x01C00002`,
+where the TCG EK Credential Profile puts the RSA EK certificate, as it was when the attestation key
+was made; absent if there was none or the owner's or index's empty auth did not read it. A client
+then needs no access to the TPM for it either.
+
+Both identify the TPM for good, so only the user reads them: a `C_GetAttributeValue` without the
+user login is `CKR_ATTRIBUTE_SENSITIVE`, whatever handle the caller holds, and an attestation key
+must be a private object (`CKA_PRIVATE` false is `CKR_TEMPLATE_INCONSISTENT`).
+
+`CKM_TPM2_ACTIVATE_CREDENTIAL` is `TPM2_ActivateCredential` with the attestation key and that EK,
+used with `C_DecryptInit` and `C_Decrypt`:
+
+| | |
+|---|---|
+| key | the private key of an attestation key (`CKR_KEY_TYPE_INCONSISTENT` for any other, and for a public key object). `CKA_ALLOWED_MECHANISMS` is not consulted |
+| parameter | none |
+| input | the `TPM2B_ID_OBJECT` followed by the `TPM2B_ENCRYPTED_SECRET` of `TPM2_MakeCredential`, marshaled and concatenated (the file `tpm2_makecredential` writes has an 8 byte header before them: leave it out). Not parsing to the end, damaged, or made for another key or Name is `CKR_ENCRYPTED_DATA_INVALID`; over `CK_TPM2_ACTIVATE_CREDENTIAL_MAX_INPUT_LEN` bytes, `CKR_ENCRYPTED_DATA_LEN_RANGE` |
+| output | the credential, at most 32 bytes (the digest size of the EK's name algorithm). The buffer must hold `CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN` bytes; a call with a `NULL` output returns that length without using the TPM |
+
+The module authorizes the EK with `PolicySecret(TPM_RH_ENDORSEMENT)` and an empty endorsement auth
+value, which is how a TPM that has not been taken is: with another value the operation is
+`CKR_GENERAL_ERROR`. The user must be logged in. As with any decryption, a buffer too small keeps the
+operation, and any other error ends it.
+
+### What the client verifies
+
+The module is not trusted for the EK: a module that lies could hand out a software RSA key as
+`CKA_TPM2_EK_PUB_BLOB`, decrypt the credential itself and "activate" with no TPM involved. What
+stops that is the certificate, which only a manufacturer's TPM has. A client checks:
+
+1. The EK certificate (`CKA_TPM2_EK_CERT`, or the manufacturer's service) chains to the
+   manufacturer's CA that the client trusts, and its public key is the modulus of
+   `CKA_TPM2_EK_PUB_BLOB`.
+2. The attestation key is what the client relies on: its `CKA_TPM2_PUB_BLOB` shows `restricted`,
+   `fixedTPM`, `fixedParent` (as for `CKM_TPM2_CERTIFY_OBJECT`).
+3. The credential was made for that EK and the Name computed from that `CKA_TPM2_PUB_BLOB`, with a
+   fresh random credential, and what the module returns is that credential.
+
+```sh
+# the client: nothing of the TPM needed. ek.pub is CKA_TPM2_EK_PUB_BLOB, the Name is
+# 000b followed by the SHA-256 of the TPMT_PUBLIC in CKA_TPM2_PUB_BLOB (after its 2 byte size).
+tpm2_makecredential -T none -e ek.pub -s credential.bin -n "$ak_name" -o cred.out
+tail -c +9 cred.out > input.bin     # the CKM_TPM2_ACTIVATE_CREDENTIAL input
+```
+
+`test/integration/pkcs-activate-credential.int.c` makes credentials with `TPM2_MakeCredential` and
+recovers them, and checks the EK against `tpm2_createek`, the refusals and the sizes.

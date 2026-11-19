@@ -614,6 +614,16 @@ CK_RV object_get_attributes(session_ctx *ctx, CK_OBJECT_HANDLE object, CK_ATTRIB
 
         CK_ATTRIBUTE_PTR t = &templ[i];
 
+        /*
+         * The TPM's EK and its certificate identify it for good: only the user reads them, whatever
+         * handle the caller holds (a private object is only found by the user, not hidden by handle).
+         */
+        if (!is_user_logged_in && (t->type == CKA_TPM2_EK_PUB_BLOB || t->type == CKA_TPM2_EK_CERT)) {
+            t->ulValueLen = CK_UNAVAILABLE_INFORMATION;
+            rv = CKR_ATTRIBUTE_SENSITIVE;
+            continue;
+        }
+
         CK_ATTRIBUTE_PTR found = attr_get_attribute_by_type(tobj->attrs, t->type);
         if (cka_private && t->type == CKA_VALUE && is_user_logged_in &&
                 (!found || !found->ulValueLen)) {

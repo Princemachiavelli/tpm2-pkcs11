@@ -211,6 +211,8 @@ static const mdetail_entry _g_mechs_templ[] = {
     { .type = CKM_TPM2_CERTIFY_OBJECT, .flags = mf_sign|mf_vendor },
     /* a key pair like CKM_EC_KEY_PAIR_GEN's, with a fixed template: see tpm2_generate_key() */
     { .type = CKM_TPM2_AK_PAIR_GEN, .flags = mf_is_keygen|mf_vendor },
+    /* an attestation key's credential: C_DecryptInit's key is not asked for CKA_ALLOWED_MECHANISMS */
+    { .type = CKM_TPM2_ACTIVATE_CREDENTIAL, .flags = mf_decrypt|mf_vendor, .get_tpm_opdata = tpm_activate_get_opdata },
 };
 
 const rsa_detail _g_rsa_keysizes_templ [] = {

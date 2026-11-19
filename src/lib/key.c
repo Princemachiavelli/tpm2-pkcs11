@@ -276,6 +276,25 @@ CK_RV key_gen (
         goto out;
     }
 
+    /* the attestation key's EK is for the private object, a stable identifier of the TPM */
+    if (objdata.ek_pub_blob) {
+        bool added = attr_list_add_buf(new_private_tobj->attrs, CKA_TPM2_EK_PUB_BLOB,
+                (CK_BYTE_PTR)objdata.ek_pub_blob, twist_len(objdata.ek_pub_blob));
+        if (!added) {
+            rv = CKR_GENERAL_ERROR;
+            goto out;
+        }
+    }
+
+    if (objdata.ek_cert) {
+        bool added = attr_list_add_buf(new_private_tobj->attrs, CKA_TPM2_EK_CERT,
+                (CK_BYTE_PTR)objdata.ek_cert, twist_len(objdata.ek_cert));
+        if (!added) {
+            rv = CKR_GENERAL_ERROR;
+            goto out;
+        }
+    }
+
     rv = tobject_set_blob_data(new_public_tobj, objdata.pubblob, NULL);
     if (rv != CKR_OK) {
         goto out;

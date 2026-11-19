@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CKM_TPM2_AK_PAIR_GEN`: `C_GenerateKeyPair` of an attestation key (a restricted ECDSA signing key
   of the TPM) as an object of the token, and `CKM_TPM2_CERTIFY_OBJECT`, `CKM_TPM2_CERTIFY` signed
   by such a key, named by its object handle: no TPM handle or TPM access for the client.
+- `CKM_TPM2_ACTIVATE_CREDENTIAL` (`C_DecryptInit`/`C_Decrypt`), `CKA_TPM2_EK_PUB_BLOB` and
+  `CKA_TPM2_EK_CERT`: `TPM2_ActivateCredential` with an attestation key and the default RSA 2048
+  Endorsement Key, to chain the key to the EK certificate. See docs/VENDOR.md.
 
 ## [1.10.1] - 2026-08-06
 ### Fixed:

@@ -257,6 +257,20 @@ static void test_ak_template_refusals(void **state) {
     CK_ATTRIBUTE priv[] = { { CKA_TOKEN, &ck_true, sizeof(ck_true) } };
     rv = C_GenerateKeyPair(session, &mech, pub, 1, priv, 1, &ak.pub, &ak.priv);
     assert_int_equal(rv, CKR_MECHANISM_PARAM_INVALID);
+
+    /* a private key that is not private: it carries what only the user is to read (CKA_TPM2_EK_*) */
+    mech.pParameter = NULL;
+    mech.ulParameterLen = 0;
+    CK_ATTRIBUTE public_priv[] = {
+        { CKA_TOKEN, &ck_true, sizeof(ck_true) },
+        { CKA_PRIVATE, &ck_false, sizeof(ck_false) },
+    };
+    rv = C_GenerateKeyPair(session, &mech, pub, 1, public_priv, ARRAY_LEN(public_priv), &ak.pub, &ak.priv);
+    assert_int_equal(rv, CKR_TEMPLATE_INCONSISTENT);
+
+    /* the same call with nothing wrong with it */
+    rv = C_GenerateKeyPair(session, &mech, pub, 1, priv, 1, &ak.pub, &ak.priv);
+    assert_int_equal(rv, CKR_OK);
 }
 
 /* The attestation key's public key, from its CKA_TPM2_PUB_BLOB. */

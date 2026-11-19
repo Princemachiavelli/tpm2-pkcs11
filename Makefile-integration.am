@@ -45,7 +45,8 @@ check_PROGRAMS += \
     test/integration/pkcs-lockout.int \
     test/integration/pkcs-ecdh.int \
     test/integration/pkcs-certify.int \
-    test/integration/pkcs-attest-key.int
+    test/integration/pkcs-attest-key.int \
+    test/integration/pkcs-activate-credential.int
 
 # add test scripts
 check_SCRIPTS += $(integration_scripts)
@@ -112,6 +113,10 @@ test_integration_pkcs_certify_int_SOURCES = test/integration/pkcs-certify.int.c 
 test_integration_pkcs_attest_key_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
 test_integration_pkcs_attest_key_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
 test_integration_pkcs_attest_key_int_SOURCES = test/integration/pkcs-attest-key.int.c test/integration/test.c
+
+test_integration_pkcs_activate_credential_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
+test_integration_pkcs_activate_credential_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)
+test_integration_pkcs_activate_credential_int_SOURCES = test/integration/pkcs-activate-credential.int.c test/integration/test.c
 
 test_integration_pkcs_session_state_int_CFLAGS  = $(AM_CFLAGS) $(TESTS_CFLAGS)
 test_integration_pkcs_session_state_int_LDADD   = $(TESTS_LDADD)  $(SQLITE3_LIBS)

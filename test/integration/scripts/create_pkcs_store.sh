@@ -170,6 +170,22 @@ tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -
     -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
 tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
 
+# The default RSA 2048 EK as tpm2-tools makes it, its public area (a TPM2B_PUBLIC) in ek.pub: what
+# the EK of CKM_TPM2_ACTIVATE_CREDENTIAL must be. Nothing of the TPM is kept.
+tpm2_createek -G rsa -c "$TPM2_PKCS11_STORE/ek.ctx" -u "$TPM2_PKCS11_STORE/ek.pub"
+tpm2_flushcontext -t
+
+# An EK certificate at the NV index of the TCG EK Credential Profile (a self-signed stand-in, if the
+# TPM has none), read back into ek-cert.der: what CKA_TPM2_EK_CERT must hold.
+if ! tpm2_nvreadpublic 0x1c00002 > /dev/null 2>&1; then
+    openssl req -x509 -newkey rsa:2048 -nodes -subj "/CN=test EK" -days 2 -outform der \
+        -keyout "$TPM2_PKCS11_STORE/ek-cert.key" -out "$TPM2_PKCS11_STORE/ek-cert-in.der"
+    tpm2_nvdefine 0x1c00002 -C o -s "$(stat -c %s "$TPM2_PKCS11_STORE/ek-cert-in.der")" \
+        -a 'ownerwrite|ownerread|authread|no_da'
+    tpm2_nvwrite 0x1c00002 -C o -i "$TPM2_PKCS11_STORE/ek-cert-in.der"
+fi
+tpm2_nvread 0x1c00002 -C o -o "$TPM2_PKCS11_STORE/ek-cert.der"
+
 #
 # generate cert
 #

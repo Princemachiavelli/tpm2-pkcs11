@@ -129,6 +129,7 @@ static CK_RV check_specific_attrs(CK_MECHANISM_TYPE mech,
     case CKM_RSA_PKCS_KEY_PAIR_GEN:
         return CKR_OK;
     case CKM_EC_KEY_PAIR_GEN:
+    case CKM_TPM2_AK_PAIR_GEN:
         return ecc_check_attrs(public_key_template, public_key_attribute_count,
                     private_key_template, private_key_attribute_count);
     default:

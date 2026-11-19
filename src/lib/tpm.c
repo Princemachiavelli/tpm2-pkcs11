@@ -3002,6 +3002,82 @@ static TSS2_RC tpm_create_ek(tpm_ctx *tctx, ESYS_TR *ek, TPM2B_PUBLIC **ek_pub) 
     return TSS2_RC_SUCCESS;
 }
 
+/* The NV index of the RSA EK certificate, TCG EK Credential Profile (an X.509 certificate in DER). */
+#define EK_CERT_NV_INDEX 0x01C00002
+#define EK_CERT_MAX_LEN 8192
+
+/*
+ * The EK certificate the manufacturer put in the TPM, read with the owner's empty auth value or the
+ * index's own, or NULL if there is none or it cannot be read: it is only an aid to the client.
+ */
+static twist tpm_read_ek_cert(tpm_ctx *tctx) {
+
+    ESYS_CONTEXT *ectx = tctx->esys_ctx;
+
+    ESYS_TR nv = ESYS_TR_NONE;
+    TSS2_RC rc = Esys_TR_FromTPMPublic(ectx, EK_CERT_NV_INDEX,
+            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &nv);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGV("No EK certificate at NV index 0x%x: %s", EK_CERT_NV_INDEX, Tss2_RC_Decode(rc));
+        return NULL;
+    }
+
+    twist cert = NULL;
+    TPM2B_NV_PUBLIC *nv_pub = NULL;
+    TPM2B_NAME *nv_name = NULL;
+    uint8_t *buf = NULL;
+
+    rc = Esys_NV_ReadPublic(ectx, nv, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &nv_pub, &nv_name);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGW("Esys_NV_ReadPublic: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    size_t len = nv_pub->nvPublic.dataSize;
+    if (!len || len > EK_CERT_MAX_LEN) {
+        goto out;
+    }
+
+    buf = malloc(len);
+    if (!buf) {
+        goto out;
+    }
+
+    /* the owner may read it (TCG profile); else the index's own, empty, auth */
+    ESYS_TR auth = ESYS_TR_RH_OWNER;
+    size_t offset = 0;
+    while (offset < len) {
+        UINT16 chunk = len - offset > 512 ? 512 : len - offset;
+        TPM2B_MAX_NV_BUFFER *data = NULL;
+        rc = Esys_NV_Read(ectx, auth, nv, ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                chunk, offset, &data);
+        if (rc != TSS2_RC_SUCCESS && offset == 0 && auth == ESYS_TR_RH_OWNER) {
+            auth = nv;
+            rc = Esys_NV_Read(ectx, auth, nv, ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                    chunk, offset, &data);
+        }
+        if (rc != TSS2_RC_SUCCESS || data->size != chunk) {
+            LOGW("Esys_NV_Read of the EK certificate: %s", Tss2_RC_Decode(rc));
+            Esys_Free(data);
+            goto out;
+        }
+        memcpy(&buf[offset], data->buffer, chunk);
+        Esys_Free(data);
+        offset += chunk;
+    }
+
+    cert = twistbin_new(buf, len);
+
+out:
+    free(buf);
+    Esys_Free(nv_pub);
+    Esys_Free(nv_name);
+    /* an NV index is not loaded in the TPM: the ESYS_TR is all there is to release */
+    Esys_TR_Close(ectx, &nv);
+
+    return cert;
+}
+
 CK_RV tpm_activate_get_opdata(mdetail *mdtl, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **outdata) {
 
     if (mech->pParameter || mech->ulParameterLen) {
@@ -3855,6 +3931,16 @@ static CK_RV tpm_data_init(
             if (rv != CKR_OK) {
                 return rv;
             }
+
+            /*
+             * It carries the TPM's EK (a lasting identifier of it): visible only to the user.
+             */
+            CK_ATTRIBUTE_PTR priv = attr_get_attribute_by_type(privattrs, CKA_PRIVATE);
+            CK_BBOOL is_private = CK_TRUE;
+            if (priv && (attr_CK_BBOOL(priv, &is_private) != CKR_OK || !is_private)) {
+                LOGE("An attestation key is a private object");
+                return CKR_TEMPLATE_INCONSISTENT;
+            }
             break;
         }
         default:
@@ -4350,6 +4436,9 @@ CK_RV tpm2_generate_key(
                 LOGW("No endorsement key public area for the attestation key");
             }
         }
+
+        /* the manufacturer's certificate for it, if the TPM has one */
+        objdata->ek_cert = tpm_read_ek_cert(tpm);
     }
 
     objdata->privblob = tmppriv;
@@ -4380,6 +4469,7 @@ void tpm_objdata_free(tpm_object_data *objdata) {
     twist_free(objdata->privblob);
     twist_free(objdata->pubblob);
     twist_free(objdata->ek_pub_blob);
+    twist_free(objdata->ek_cert);
 }
 
 CK_RV tpm_get_algorithms(tpm_ctx *ctx, TPMS_CAPABILITY_DATA **capabilityData) {

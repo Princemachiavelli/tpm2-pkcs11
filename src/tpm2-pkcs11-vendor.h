@@ -95,9 +95,19 @@ typedef CK_TPM2_CERTIFY_OBJECT_PARAMS *CK_TPM2_CERTIFY_OBJECT_PARAMS_PTR;
  * manufacturer's EK certificate is for). A client makes a credential for it with TPM2_MakeCredential
  * (it needs no TPM for that: tpm2_makecredential -T none), naming the attestation key's Name.
  * Absent when the TPM's endorsement hierarchy had an auth value when the key was made. It is a
- * stable identifier of the TPM, so it is on the private object: readable after the user login.
+ * stable identifier of the TPM: only the user reads it (CKR_ATTRIBUTE_SENSITIVE without the login),
+ * and the attestation key is a private object for that.
  */
 #define CKA_TPM2_EK_PUB_BLOB     (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x6UL)
+
+/*
+ * CKA_TPM2_EK_CERT: next to the above, the EK certificate (X.509, DER) that the TPM's NV index
+ * 0x01C00002 held when the attestation key was made, as the TCG EK Credential Profile puts it, so a
+ * client needs no TPM access to read it either. Absent if there was none or it could not be read
+ * (it is read with the owner's, or the index's, empty auth value). The client checks it: that its
+ * public key is CKA_TPM2_EK_PUB_BLOB's, and that it chains to the manufacturer's CA.
+ */
+#define CKA_TPM2_EK_CERT         (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x7UL)
 
 /*
  * CKM_TPM2_ACTIVATE_CREDENTIAL: TPM2_ActivateCredential with an attestation key (a private key made

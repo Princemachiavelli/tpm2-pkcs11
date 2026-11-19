@@ -149,11 +149,19 @@ recover it.
 `CKA_TPM2_EK_PUB_BLOB` is on the private key of an attestation key: the public area of the default
 RSA 2048 EK of the TCG EK Credential Profile, a `TPM2B_PUBLIC`. It is a function of the TPM's
 endorsement seed and the template only, so it is the key of the manufacturer's EK certificate (the
-test compares it byte for byte with what `tpm2_createek` makes). It identifies the TPM for good, so it
-is on the private object: readable after the user login only. It is absent if the endorsement
+test compares it byte for byte with what `tpm2_createek` makes). It is absent if the endorsement
 hierarchy had an auth value when the key was made. The EK is not an object of the token: it is a
 primary of the endorsement hierarchy, not a child of the token's primary, and the module makes it
 for the operation and flushes it.
+
+`CKA_TPM2_EK_CERT` is next to it: the X.509 certificate (DER) in the TPM's NV index `0x01C00002`,
+where the TCG EK Credential Profile puts the RSA EK certificate, as it was when the attestation key
+was made; absent if there was none or the owner's or index's empty auth did not read it. A client
+then needs no access to the TPM for it either.
+
+Both identify the TPM for good, so only the user reads them: a `C_GetAttributeValue` without the
+user login is `CKR_ATTRIBUTE_SENSITIVE`, whatever handle the caller holds, and an attestation key
+must be a private object (`CKA_PRIVATE` false is `CKR_TEMPLATE_INCONSISTENT`).
 
 `CKM_TPM2_ACTIVATE_CREDENTIAL` is `TPM2_ActivateCredential` with the attestation key and that EK,
 used with `C_DecryptInit` and `C_Decrypt`:
@@ -169,6 +177,20 @@ The module authorizes the EK with `PolicySecret(TPM_RH_ENDORSEMENT)` and an empt
 value, which is how a TPM that has not been taken is: with another value the operation is
 `CKR_GENERAL_ERROR`. The user must be logged in. As with any decryption, a buffer too small keeps the
 operation, and any other error ends it.
+
+### What the client verifies
+
+The module is not trusted for the EK: a module that lies could hand out a software RSA key as
+`CKA_TPM2_EK_PUB_BLOB`, decrypt the credential itself and "activate" with no TPM involved. What
+stops that is the certificate, which only a manufacturer's TPM has. A client checks:
+
+1. The EK certificate (`CKA_TPM2_EK_CERT`, or the manufacturer's service) chains to the
+   manufacturer's CA that the client trusts, and its public key is the modulus of
+   `CKA_TPM2_EK_PUB_BLOB`.
+2. The attestation key is what the client relies on: its `CKA_TPM2_PUB_BLOB` shows `restricted`,
+   `fixedTPM`, `fixedParent` (as for `CKM_TPM2_CERTIFY_OBJECT`).
+3. The credential was made for that EK and the Name computed from that `CKA_TPM2_PUB_BLOB`, with a
+   fresh random credential, and what the module returns is that credential.
 
 ```sh
 # the client: nothing of the TPM needed. ek.pub is CKA_TPM2_EK_PUB_BLOB, the Name is

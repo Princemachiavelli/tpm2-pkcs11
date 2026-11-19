@@ -198,6 +198,8 @@ struct tpm_object_data {
 
     /* an attestation key only: the public area of the EK its credentials are made for, or NULL */
     twist ek_pub_blob;
+    /* the EK certificate in the TPM's NV (DER), if there is one */
+    twist ek_cert;
 };
 
 /** Whether the operation is a vendor one (CKM_TPM2_ACTIVATE_CREDENTIAL), which its one call ends, error or not. */

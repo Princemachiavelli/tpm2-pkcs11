@@ -297,11 +297,38 @@ static void test_ek_public(void **state) {
     rc = Esys_FlushContext(_g_ectx, ek);
     assert_int_equal(rc, TSS2_RC_SUCCESS);
 
+    /* the EK certificate of the TPM's NV, as the script read it back */
+    n = snprintf(path, sizeof(path), "%s/ek-cert.der", store);
+    assert_true(n > 0 && (size_t)n < sizeof(path));
+    f = fopen(path, "r");
+    assert_non_null(f);
+    CK_BYTE want_cert[8192];
+    size_t want_cert_len = fread(want_cert, 1, sizeof(want_cert), f);
+    fclose(f);
+    assert_true(want_cert_len > 0);
+    CK_BYTE cert[8192];
+    CK_ATTRIBUTE cert_attr = { CKA_TPM2_EK_CERT, cert, sizeof(cert) };
+    CK_RV rv = C_GetAttributeValue(session, ak.priv, &cert_attr, 1);
+    assert_int_equal(rv, CKR_OK);
+    assert_int_equal(cert_attr.ulValueLen, want_cert_len);
+    assert_memory_equal(cert, want_cert, want_cert_len);
+
     /* not on the public object */
     blob_len = sizeof(blob);
     CK_ATTRIBUTE attr = { CKA_TPM2_EK_PUB_BLOB, blob, blob_len };
-    CK_RV rv = C_GetAttributeValue(session, ak.pub, &attr, 1);
+    rv = C_GetAttributeValue(session, ak.pub, &attr, 1);
     assert_true(rv != CKR_OK || attr.ulValueLen == CK_UNAVAILABLE_INFORMATION);
+
+    /* and not without the user: the private object is not there to read */
+    logout(session);
+    blob_len = sizeof(blob);
+    attr.pValue = blob;
+    attr.ulValueLen = blob_len;
+    rv = C_GetAttributeValue(session, ak.priv, &attr, 1);
+    assert_int_not_equal(rv, CKR_OK);
+    cert_attr.ulValueLen = sizeof(cert);
+    rv = C_GetAttributeValue(session, ak.priv, &cert_attr, 1);
+    assert_int_not_equal(rv, CKR_OK);
 }
 
 /* The credential a client made for the EK and the Name comes back, of each length. */

@@ -156,10 +156,17 @@ static CK_RV common_init_op (session_ctx *ctx, encrypt_op_data *supplied_opdata,
         return rv;
     }
 
-    rv = object_mech_is_supported(tobj, mechanism);
-    if (rv != CKR_OK) {
-        tobject_user_decrement(tobj);
-        return rv;
+    /*
+     * CKM_TPM2_ACTIVATE_CREDENTIAL belongs to an attestation key, which lists no mechanism: the
+     * mechanism checks the key itself.
+     */
+    bool is_activate = mechanism->mechanism == CKM_TPM2_ACTIVATE_CREDENTIAL;
+    if (!is_activate) {
+        rv = object_mech_is_supported(tobj, mechanism);
+        if (rv != CKR_OK) {
+            tobject_user_decrement(tobj);
+            return rv;
+        }
     }
 
     CK_ATTRIBUTE_PTR a = attr_get_attribute_by_type(tobj->attrs, CKA_CLASS);
@@ -173,6 +180,12 @@ static CK_RV common_init_op (session_ctx *ctx, encrypt_op_data *supplied_opdata,
     if (rv != CKR_OK) {
         LOGE("Could not convert CKA_CLASS");
         return rv;
+    }
+
+    /* and it decrypts: there is nothing to encrypt, and a public key object is not in the TPM */
+    if (is_activate && (op != operation_decrypt || obj_class != CKO_PRIVATE_KEY)) {
+        tobject_user_decrement(tobj);
+        return op != operation_decrypt ? CKR_MECHANISM_INVALID : CKR_KEY_TYPE_INCONSISTENT;
     }
 
     encrypt_op_data *opdata;
@@ -259,8 +272,22 @@ static CK_RV common_update_op (session_ctx *ctx, encrypt_op_data *supplied_opdat
         return CKR_GENERAL_ERROR;
     }
 
-    return fop(&opdata->cryptopdata, part, part_len,
+    rv = fop(&opdata->cryptopdata, part, part_len,
             encrypted_part, encrypted_part_len);
+
+    /*
+     * A vendor operation is its one call: a refusal ends it, as the TPM's refusal of a sign
+     * does. A buffer too small keeps it for the next call, as always.
+     */
+    if (rv != CKR_OK && rv != CKR_BUFFER_TOO_SMALL && !supplied_opdata
+            && !opdata->use_sw && tpm_opdata_is_vendor(opdata->cryptopdata.tpm_opdata)) {
+        tobject *tobj = session_ctx_opdata_get_tobject(ctx);
+        tobj->is_authenticated = false;
+        session_ctx_opdata_clear(ctx);
+        tobject_user_decrement(tobj);
+    }
+
+    return rv;
 }
 
 static CK_RV common_final_op(session_ctx *ctx, encrypt_op_data *supplied_opdata, operation op,

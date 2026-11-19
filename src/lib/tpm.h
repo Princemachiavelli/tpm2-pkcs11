@@ -195,7 +195,16 @@ struct tpm_object_data {
 
     twist pubblob;
     twist privblob;
+
+    /* an attestation key only: the public area of the EK its credentials are made for, or NULL */
+    twist ek_pub_blob;
 };
+
+/** Whether the operation is a vendor one (CKM_TPM2_ACTIVATE_CREDENTIAL), which its one call ends, error or not. */
+bool tpm_opdata_is_vendor(tpm_op_data *opdata);
+
+/** CKM_TPM2_ACTIVATE_CREDENTIAL's operation data (tpm2-pkcs11-vendor.h), for an attestation key. */
+CK_RV tpm_activate_get_opdata(mdetail *mdtl, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **outdata);
 
 void tpm_objdata_free(tpm_object_data *objdata);
 

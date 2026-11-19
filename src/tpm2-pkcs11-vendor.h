@@ -88,6 +88,53 @@ typedef struct CK_TPM2_CERTIFY_OBJECT_PARAMS {
 
 typedef CK_TPM2_CERTIFY_OBJECT_PARAMS *CK_TPM2_CERTIFY_OBJECT_PARAMS_PTR;
 
+/*
+ * CKA_TPM2_EK_PUB_BLOB: on the private key of an attestation key (CKM_TPM2_AK_PAIR_GEN), the public
+ * area of the TPM's Endorsement Key that CKM_TPM2_ACTIVATE_CREDENTIAL uses, marshaled as a
+ * TPM2B_PUBLIC: the default RSA 2048 EK of the TCG EK Credential Profile (the one the TPM
+ * manufacturer's EK certificate is for). A client makes a credential for it with TPM2_MakeCredential
+ * (it needs no TPM for that: tpm2_makecredential -T none), naming the attestation key's Name.
+ * Absent when the TPM's endorsement hierarchy had an auth value when the key was made. It is a
+ * stable identifier of the TPM, so it is on the private object: readable after the user login.
+ */
+#define CKA_TPM2_EK_PUB_BLOB     (CKA_VENDOR_DEFINED|CKA_VENDOR_TPM2_DEFINED|0x6UL)
+
+/*
+ * CKM_TPM2_ACTIVATE_CREDENTIAL: TPM2_ActivateCredential with an attestation key (a private key made
+ * by CKM_TPM2_AK_PAIR_GEN) as the key the credential is bound to, and the EK above as the key it is
+ * encrypted to. A client uses it to chain the attestation key to the EK certificate: it makes a
+ * credential with the EK's public key and the attestation key's Name, and only a TPM that holds
+ * both can recover it. For C_DecryptInit / C_Decrypt.
+ *
+ *   C_DecryptInit hKey       the attestation key's private key object. CKA_ALLOWED_MECHANISMS is
+ *                            not consulted (an attestation key has none); any other key is
+ *                            CKR_KEY_TYPE_INCONSISTENT.
+ *                 pParameter none (CKR_MECHANISM_PARAM_INVALID otherwise).
+ *   C_Decrypt     pEncryptedData the TPM2B_ID_OBJECT (the credential blob) followed by the
+ *                            TPM2B_ENCRYPTED_SECRET (the secret), as TPM2_MakeCredential returns
+ *                            them, marshaled and concatenated: without the file header that
+ *                            tpm2_makecredential writes (CKR_ENCRYPTED_DATA_INVALID if they do not
+ *                            parse to the end, or the TPM refuses them: a credential made for
+ *                            another key or Name).
+ *                 pData      the credential: at most 32 bytes, the digest size of the EK's name
+ *                            algorithm, which TPM2_MakeCredential enforces. The buffer must hold
+ *                            CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN bytes (a call with a NULL pData
+ *                            returns that length without touching the TPM), which is a bound,
+ *                            not the length. As with any decryption, a buffer too small keeps
+ *                            the operation; any other error ends it.
+ *
+ * The Endorsement Key is created from the endorsement hierarchy and flushed inside the operation:
+ * the module needs the endorsement hierarchy's auth value to be empty, as on a TPM that has not
+ * been taken (CKR_GENERAL_ERROR otherwise). The user must be logged in.
+ */
+#define CKM_TPM2_ACTIVATE_CREDENTIAL (CKM_VENDOR_DEFINED|CKM_VENDOR_TPM2_DEFINED|0x4UL)
+
+/* An upper bound of the credential CKM_TPM2_ACTIVATE_CREDENTIAL returns (sizeof(TPMU_HA)). */
+#define CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN 64UL
+
+/* The longest input of CKM_TPM2_ACTIVATE_CREDENTIAL accepted (an id object and an RSA 2048 secret are about 400). */
+#define CK_TPM2_ACTIVATE_CREDENTIAL_MAX_INPUT_LEN 1024UL
+
 /* An upper bound of the output of CKM_TPM2_CERTIFY (an attest of a certified key and a 4096-bit RSA signature). */
 #define CK_TPM2_CERTIFY_MAX_LEN  1024UL
 

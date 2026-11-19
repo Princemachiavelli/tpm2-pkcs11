@@ -2932,11 +2932,239 @@ CK_RV tpm_final_encrypt(crypto_op_data *opdata,
     return common_final_encrypt_decrypt(ENCRYPT, opdata, last_part, last_part_len);
 }
 
+/*
+ * The default RSA 2048 Endorsement Key of the TCG EK Credential Profile (template L-1): a
+ * restricted decryption primary of the endorsement hierarchy that is used with
+ * PolicySecret(TPM_RH_ENDORSEMENT), whose digest is the authPolicy. The key the manufacturer's EK
+ * certificate is for, and a function of the TPM's endorsement seed only.
+ */
+static const TPM2B_PUBLIC ek_template = {
+    .size = 0,
+    .publicArea = {
+        .type = TPM2_ALG_RSA,
+        .nameAlg = TPM2_ALG_SHA256,
+        .objectAttributes =
+            TPMA_OBJECT_FIXEDTPM
+            | TPMA_OBJECT_FIXEDPARENT
+            | TPMA_OBJECT_SENSITIVEDATAORIGIN
+            | TPMA_OBJECT_ADMINWITHPOLICY
+            | TPMA_OBJECT_RESTRICTED
+            | TPMA_OBJECT_DECRYPT,
+        .authPolicy = {
+            .size = 32,
+            .buffer = {
+                0x83, 0x71, 0x97, 0x67, 0x44, 0x84, 0xb3, 0xf8,
+                0x1a, 0x90, 0xcc, 0x8d, 0x46, 0xa5, 0xd7, 0x24,
+                0xfd, 0x52, 0xd7, 0x6e, 0x06, 0x52, 0x0b, 0x64,
+                0xf2, 0xa1, 0xda, 0x1b, 0x33, 0x14, 0x69, 0xaa,
+            },
+        },
+        .parameters.rsaDetail = {
+            .symmetric = {
+                .algorithm = TPM2_ALG_AES,
+                .keyBits.aes = 128,
+                .mode.aes = TPM2_ALG_CFB,
+            },
+            .scheme = { .scheme = TPM2_ALG_NULL },
+            .keyBits = 2048,
+            .exponent = 0,
+        },
+        .unique.rsa = { .size = 256 },
+    },
+};
+
+/*
+ * Create the Endorsement Key under the endorsement hierarchy, whose auth value must be empty. The
+ * caller flushes it.
+ */
+static TSS2_RC tpm_create_ek(tpm_ctx *tctx, ESYS_TR *ek, TPM2B_PUBLIC **ek_pub) {
+
+    TPM2B_SENSITIVE_CREATE in_sensitive = { .size = 0 };
+    TPM2B_DATA outside_info = TPM2B_EMPTY_INIT;
+    TPML_PCR_SELECTION creation_pcr = { .count = 0 };
+    TPM2B_CREATION_DATA *creation_data = NULL;
+    TPM2B_DIGEST *creation_hash = NULL;
+    TPMT_TK_CREATION *creation_ticket = NULL;
+
+    TSS2_RC rc = Esys_CreatePrimary(tctx->esys_ctx, ESYS_TR_RH_ENDORSEMENT,
+            ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+            &in_sensitive, &ek_template, &outside_info, &creation_pcr,
+            ek, ek_pub, &creation_data, &creation_hash, &creation_ticket);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_CreatePrimary (endorsement key): %s", Tss2_RC_Decode(rc));
+        return rc;
+    }
+
+    Esys_Free(creation_data);
+    Esys_Free(creation_hash);
+    Esys_Free(creation_ticket);
+
+    return TSS2_RC_SUCCESS;
+}
+
+CK_RV tpm_activate_get_opdata(mdetail *mdtl, tpm_ctx *tctx, CK_MECHANISM_PTR mech, tobject *tobj, tpm_op_data **outdata) {
+
+    if (mech->pParameter || mech->ulParameterLen) {
+        return CKR_MECHANISM_PARAM_INVALID;
+    }
+
+    /* only an attestation key: an ordinary key of the token is not bound to a credential */
+    CK_ATTRIBUTE_PTR a = attr_get_attribute_by_type(tobj->attrs, CKA_KEY_GEN_MECHANISM);
+    CK_ULONG gen = 0;
+    if (!tobj->priv || !tobj->tpm_esys_tr || !a || attr_CK_ULONG(a, &gen) != CKR_OK
+            || gen != CKM_TPM2_AK_PAIR_GEN) {
+        return CKR_KEY_TYPE_INCONSISTENT;
+    }
+
+    tpm_op_data *opdata = tpm_opdata_new(mdtl, mech);
+    if (!opdata) {
+        LOGE("oom");
+        return CKR_HOST_MEMORY;
+    }
+
+    opdata->ctx = tctx;
+    opdata->tobj = tobj;
+    opdata->op_type = CKK_EC;
+
+    *outdata = opdata;
+
+    return CKR_OK;
+}
+
+/*
+ * CKM_TPM2_ACTIVATE_CREDENTIAL (tpm2-pkcs11-vendor.h): the credential blob and the secret as
+ * TPM2_MakeCredential returns them, marshaled and concatenated, to the credential. The EK is made
+ * in the endorsement hierarchy for the command, authorized with PolicySecret(endorsement), and
+ * flushed.
+ */
+static CK_RV tpm_activate_credential(tpm_op_data *opdata,
+        CK_BYTE_PTR in, CK_ULONG inlen,
+        CK_BYTE_PTR out, CK_ULONG_PTR outlen) {
+
+    /* the bound is fixed: a size query and a buffer too small never use the TPM */
+    if (!out) {
+        *outlen = CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN;
+        return CKR_OK;
+    }
+
+    if (*outlen < CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN) {
+        *outlen = CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN;
+        return CKR_BUFFER_TOO_SMALL;
+    }
+
+    if (inlen > CK_TPM2_ACTIVATE_CREDENTIAL_MAX_INPUT_LEN) {
+        return CKR_ENCRYPTED_DATA_LEN_RANGE;
+    }
+
+    TPM2B_ID_OBJECT credential = { 0 };
+    TPM2B_ENCRYPTED_SECRET secret = { 0 };
+    size_t offset = 0;
+    TSS2_RC rc = Tss2_MU_TPM2B_ID_OBJECT_Unmarshal(in, inlen, &offset, &credential);
+    if (rc == TSS2_RC_SUCCESS) {
+        rc = Tss2_MU_TPM2B_ENCRYPTED_SECRET_Unmarshal(in, inlen, &offset, &secret);
+    }
+    if (rc != TSS2_RC_SUCCESS || offset != inlen) {
+        LOGE("The credential blob and secret do not parse");
+        return CKR_ENCRYPTED_DATA_INVALID;
+    }
+
+    tpm_ctx *tctx = opdata->ctx;
+    ESYS_CONTEXT *ectx = tctx->esys_ctx;
+    tobject *ak = opdata->tobj;
+
+    CK_RV rv = CKR_GENERAL_ERROR;
+    ESYS_TR ek = ESYS_TR_NONE;
+    ESYS_TR policy = ESYS_TR_NONE;
+    TPM2B_PUBLIC *ek_pub = NULL;
+    TPM2B_DIGEST *cert_info = NULL;
+    TPM2B_TIMEOUT *timeout = NULL;
+    TPMT_TK_AUTH *ticket = NULL;
+    TPMT_SYM_DEF symmetric = { .algorithm = TPM2_ALG_NULL };
+
+    bool result = set_esys_auth(ectx, ak->tpm_esys_tr, ak->unsealed_auth);
+    if (!result) {
+        return CKR_GENERAL_ERROR;
+    }
+
+    rc = tpm_create_ek(tctx, &ek, &ek_pub);
+    if (rc != TSS2_RC_SUCCESS) {
+        /* the endorsement hierarchy has an auth value, or the TPM has no RSA 2048 */
+        return CKR_GENERAL_ERROR;
+    }
+
+    rc = Esys_StartAuthSession(ectx, ESYS_TR_NONE, ESYS_TR_NONE,
+            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, NULL,
+            TPM2_SE_POLICY, &symmetric, TPM2_ALG_SHA256, &policy);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_StartAuthSession: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    rc = Esys_TRSess_SetAttributes(ectx, policy, TPMA_SESSION_CONTINUESESSION, 0xff);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_TRSess_SetAttributes: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    rc = Esys_PolicySecret(ectx, ESYS_TR_RH_ENDORSEMENT, policy,
+            ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+            NULL, NULL, NULL, 0, &timeout, &ticket);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_PolicySecret: %s", Tss2_RC_Decode(rc));
+        goto out;
+    }
+
+    rc = Esys_ActivateCredential(ectx, ak->tpm_esys_tr, ek,
+            tctx->hmac_session, policy, ESYS_TR_NONE,
+            &credential, &secret, &cert_info);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_ActivateCredential: %s", Tss2_RC_Decode(rc));
+        /* what the TPM refuses of the credential: made for another key or name, or damaged */
+        if (rc_is_fmt1(rc, TPM2_RC_INTEGRITY) || rc_is_fmt1(rc, TPM2_RC_VALUE)
+                || rc_is_fmt1(rc, TPM2_RC_SIZE) || rc_is_fmt1(rc, TPM2_RC_KEY)
+                || rc_is_fmt1(rc, TPM2_RC_SCHEME) || rc_is_fmt1(rc, TPM2_RC_BINDING)) {
+            rv = CKR_ENCRYPTED_DATA_INVALID;
+        }
+        goto out;
+    }
+
+    assert(cert_info->size <= CK_TPM2_ACTIVATE_CREDENTIAL_MAX_LEN);
+    memcpy(out, cert_info->buffer, cert_info->size);
+    *outlen = cert_info->size;
+    rv = CKR_OK;
+
+out:
+    Esys_Free(cert_info);
+    Esys_Free(timeout);
+    Esys_Free(ticket);
+    Esys_Free(ek_pub);
+    if (policy != ESYS_TR_NONE) {
+        rc = Esys_FlushContext(ectx, policy);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
+        }
+    }
+    rc = Esys_FlushContext(ectx, ek);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
+    }
+
+    return rv;
+}
+
+bool tpm_opdata_is_vendor(tpm_op_data *opdata) {
+    return opdata->mech.mechanism == CKM_TPM2_ACTIVATE_CREDENTIAL;
+}
+
 CK_RV tpm_decrypt(crypto_op_data *opdata,
         CK_BYTE_PTR ctext, CK_ULONG ctextlen,
         CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen) {
 
     tpm_op_data *tpm_enc_data = opdata->tpm_opdata;
+
+    if (tpm_enc_data->mech.mechanism == CKM_TPM2_ACTIVATE_CREDENTIAL) {
+        return tpm_activate_credential(tpm_enc_data, ctext, ctextlen, ptext, ptextlen);
+    }
 
     if (tpm_enc_data->op_type == CKK_RSA) {
         CK_BYTE buf[4096];
@@ -4098,6 +4326,32 @@ CK_RV tpm2_generate_key(
     r = attr_list_add_bool(objdata->attrs, CKA_ENCRYPT, sign);
     goto_error_false(r);
 
+    if (is_ak) {
+        /*
+         * The EK the credential of CKM_TPM2_ACTIVATE_CREDENTIAL is made for. Not being able to make
+         * it (an endorsement hierarchy with an auth value) does not stop the attestation key: the
+         * attribute is absent, and activating a credential fails.
+         */
+        ESYS_TR ek = ESYS_TR_NONE;
+        TPM2B_PUBLIC *ek_pub = NULL;
+        if (tpm_create_ek(tpm, &ek, &ek_pub) == TSS2_RC_SUCCESS) {
+            uint8_t marshaled[sizeof(TPM2B_PUBLIC)];
+            size_t ek_len = 0;
+            TSS2_RC ek_rc = Tss2_MU_TPM2B_PUBLIC_Marshal(ek_pub, marshaled, sizeof(marshaled), &ek_len);
+            if (ek_rc == TSS2_RC_SUCCESS) {
+                objdata->ek_pub_blob = twistbin_new(marshaled, ek_len);
+            }
+            Esys_Free(ek_pub);
+            ek_rc = Esys_FlushContext(tpm->esys_ctx, ek);
+            if (ek_rc != TSS2_RC_SUCCESS) {
+                LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(ek_rc));
+            }
+            if (!objdata->ek_pub_blob) {
+                LOGW("No endorsement key public area for the attestation key");
+            }
+        }
+    }
+
     objdata->privblob = tmppriv;
     objdata->pubblob = tmppub;
     objdata->privhandle = out_handle;
@@ -4125,6 +4379,7 @@ void tpm_objdata_free(tpm_object_data *objdata) {
 
     twist_free(objdata->privblob);
     twist_free(objdata->pubblob);
+    twist_free(objdata->ek_pub_blob);
 }
 
 CK_RV tpm_get_algorithms(tpm_ctx *ctx, TPMS_CAPABILITY_DATA **capabilityData) {

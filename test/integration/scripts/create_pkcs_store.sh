@@ -170,6 +170,11 @@ tpm2_create -C "$TPM2_PKCS11_STORE/ak-primary.ctx" -G ecc256:ecdsa-sha256:null -
     -c "$TPM2_PKCS11_STORE/ak-auth.ctx"
 tpm2_evictcontrol -C o -c "$TPM2_PKCS11_STORE/ak-auth.ctx" 0x81000F03
 
+# The default RSA 2048 EK as tpm2-tools makes it, its public area (a TPM2B_PUBLIC) in ek.pub: what
+# the EK of CKM_TPM2_ACTIVATE_CREDENTIAL must be. Nothing of the TPM is kept.
+tpm2_createek -G rsa -c "$TPM2_PKCS11_STORE/ek.ctx" -u "$TPM2_PKCS11_STORE/ek.pub"
+tpm2_flushcontext -t
+
 #
 # generate cert
 #
